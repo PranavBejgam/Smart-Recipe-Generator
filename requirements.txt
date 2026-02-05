@@ -13,3 +13,4 @@ fsspec==2024.6.1
 safetensors==0.4.3
 PyYAML==6.0.1
 typing_extensions==4.12.2
+psycopg2-binary==2.9.9
