@@ -13,19 +13,24 @@ import hashlib
 from db_config import get_db_connection
 from table import create_user_recipe_table, alter_user_recipe_table, add_user_recipe, check_user_recipes, create_user_table, add_user, get_user, check_duplicate_recipe, get_user_recipes
 
-# pytesseract.pytesseract.tesseract_cmd = r"/opt/homebrew/bin/tesseract"  # Local OCR only
 
-# ✅ Gemini configuration (Streamlit secrets)
-genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+# ✅ Gemini configuration (safe)
+if "GEMINI_API_KEY" in st.secrets:
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+    gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+else:
+    st.error("Missing GEMINI_API_KEY in Streamlit secrets")
+    st.stop()
+
 
 def ask_gemini(prompt):
     try:
         response = gemini_model.generate_content(prompt)
-        return response.text
+        return getattr(response, "text", None)
     except Exception as e:
         st.error(f"Gemini error: {str(e)}")
         return None
+
 
 # Load the pre-trained Hugging Face model
 model = AutoModelForImageClassification.from_pretrained("jazzmacedo/fruits-and-vegetables-detector-36")
@@ -37,6 +42,7 @@ preprocess = transforms.Compose([
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
+
 def classify_ingredient(image):
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     pil_image = Image.fromarray(image)
@@ -45,6 +51,7 @@ def classify_ingredient(image):
         outputs = model(input_tensor)
         predicted_idx = torch.argmax(outputs.logits, dim=1).item()
         return labels[predicted_idx]
+
 
 """
 # OCR kept for local use only
@@ -58,6 +65,7 @@ def detect_text_from_image(image_path):
     return text.strip()
 """
 
+
 def identify_ingredient_from_text(text):
     try:
         prompt = (
@@ -70,19 +78,14 @@ def identify_ingredient_from_text(text):
         st.error(str(e))
         return None
 
+
 def clean_ingredient(ingredient):
     ingredient = re.findall(r'\b[A-Za-z]+\b', ingredient or "")
     return ' '.join(ingredient).capitalize()
 
+
 def detect_ingredient(image_path):
     detected_ingredients = []
-
-    # OCR disabled for deployment
-    # text = detect_text_from_image(image_path)
-    # if text:
-    #     ingredient_from_text = identify_ingredient_from_text(text)
-    #     if ingredient_from_text:
-    #         detected_ingredients.append(ingredient_from_text)
 
     image = cv2.imread(image_path)
     if image is None:
@@ -93,21 +96,22 @@ def detect_ingredient(image_path):
     detected_ingredients.append(clean_ingredient(ingredient_from_image))
 
     return detected_ingredients
+
+
 # Function to set the background image
 def set_bg_hack(main_bg):
-    main_bg_ext = "jpg"
-
     if not os.path.exists(main_bg):
         st.warning("Background image not found.")
         return
 
-    encoded = base64.b64encode(open(main_bg, "rb").read()).decode()
+    with open(main_bg, "rb") as f:
+        encoded = base64.b64encode(f.read()).decode()
 
     st.markdown(
         f"""
         <style>
         .stApp {{
-            background: url(data:image/{main_bg_ext};base64,{encoded});
+            background: url(data:image/jpg;base64,{encoded});
             background-size: cover;
             background-position: center;
         }}
@@ -123,7 +127,7 @@ def set_bg_hack(main_bg):
             border: 2px solid black;
         }}
         [data-testid="stSidebar"] > div:first-child {{
-            background: url(data:image/{main_bg_ext};base64,{encoded});
+            background: url(data:image/jpg;base64,{encoded});
             background-size: cover;
             background-position: center;
         }}
@@ -131,6 +135,7 @@ def set_bg_hack(main_bg):
         """,
         unsafe_allow_html=True
     )
+
 
 # ✅ Use relative path for cloud deployment
 set_bg_hack("background.jpg")
@@ -192,7 +197,7 @@ def parse_recipe(full_recipe):
         return None, None, None, None, None
 
     lines = full_recipe.split('\n')
-    title = lines[0]
+    title = lines[0] if lines else "Generated Recipe"
 
     info_prompt = (
         "Extract cooking time, cuisine type, and nutrition kcal from this recipe:\n"
@@ -207,11 +212,12 @@ def parse_recipe(full_recipe):
 
     if info:
         for line in info.split('\n'):
-            if "time" in line.lower():
+            lower = line.lower()
+            if "time" in lower:
                 cooking_time = line
-            if "cuisine" in line.lower():
+            if "cuisine" in lower:
                 cuisine = line
-            if "nutrition" in line.lower():
+            if "nutrition" in lower:
                 nutrition_value = line
 
     instructions = "\n".join(lines[1:])
@@ -257,7 +263,10 @@ def login_page():
 
                     if profile_picture is not None:
                         os.makedirs("profile_pictures", exist_ok=True)
-                        profile_picture_path = os.path.join("profile_pictures", new_user + "_" + profile_picture.name)
+                        profile_picture_path = os.path.join(
+                            "profile_pictures",
+                            new_user + "_" + profile_picture.name
+                        )
                         with open(profile_picture_path, "wb") as f:
                             f.write(profile_picture.getbuffer())
 
@@ -273,6 +282,10 @@ def login_page():
         password = st.text_input("Password", type='password', key="login_password")
 
         if st.button("Login"):
+            if not username or not password:
+                st.warning("Enter username and password.")
+                return
+
             hashed_password = hash_password(password)
             user = get_user(username)
 
@@ -290,6 +303,11 @@ def login_page():
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 def main_page():
+    if "recipe_generated" not in st.session_state:
+        st.session_state.recipe_generated = False
+    if "show_buttons" not in st.session_state:
+        st.session_state.show_buttons = False
+
     st.markdown(
         """
         <style>
@@ -308,10 +326,13 @@ def main_page():
     with col2:
         if st.button("🚪 Logout"):
             logout()
+            st.rerun()
 
     st.sidebar.header(f"👋 Welcome, {st.session_state.username}!")
+
     if st.session_state.profile_picture:
         st.sidebar.image(st.session_state.profile_picture, width=150)
+
     st.sidebar.markdown(f"""
     **📞 Phone Number:**  
     {st.session_state.phone_no}
@@ -323,6 +344,7 @@ def main_page():
     tab1, tab2 = st.tabs(["Recipe Generator", "Saved Recipes"])
 
     with tab1:
+
         uploaded_files = st.file_uploader(
             "Upload Images of Ingredients (One Ingredient per Image)",
             type=["jpg", "jpeg", "png"],
@@ -333,6 +355,11 @@ def main_page():
         mode = st.radio("Select Mode:", ("Veg", "Non-Veg"))
 
         if st.button('🧾 Detect Ingredients'):
+
+            if not uploaded_files:
+                st.warning("Please upload at least one image.")
+                return
+
             st.session_state.recipe_generated = False
             st.session_state.show_buttons = False
             st.session_state.mode = mode
@@ -343,6 +370,7 @@ def main_page():
                 os.makedirs("temp_images", exist_ok=True)
 
                 image_path = os.path.join("temp_images", uploaded_file.name)
+
                 with open(image_path, "wb") as f:
                     f.write(uploaded_file.getbuffer())
 
@@ -364,11 +392,20 @@ def main_page():
                 st.write(f"- **{ingredient}**")
 
             full_recipe = get_chatgpt_response(all_ingredients, mode)
+
+            if not full_recipe:
+                st.error("Recipe generation failed.")
+                return
+
             title, cooking_time, cuisine, nutrition_value, instructions = parse_recipe(full_recipe)
 
-            formatted_recipe = display_recipe(
-                title, cooking_time, cuisine,
-                nutrition_value, all_ingredients, instructions
+            display_recipe(
+                title,
+                cooking_time,
+                cuisine,
+                nutrition_value,
+                all_ingredients,
+                instructions
             )
 
             st.session_state.generated_recipe = {
@@ -387,18 +424,26 @@ def main_page():
         if st.session_state.show_buttons and st.session_state.recipe_generated:
 
             if st.button("Store the Recipe"):
+
+                recipe_data = st.session_state.get("generated_recipe")
+
+                if not recipe_data:
+                    st.error("No recipe to store.")
+                    return
+
                 if not check_duplicate_recipe(
                     st.session_state.username,
-                    st.session_state.generated_recipe['formatted_recipe']
+                    recipe_data['formatted_recipe']
                 ):
                     add_user_recipe(
                         username=st.session_state.username,
-                        ingredients=', '.join(st.session_state.generated_recipe['all_ingredients']),
-                        recipe_generated=st.session_state.generated_recipe['formatted_recipe'],
-                        cooking_time=st.session_state.generated_recipe['cooking_time'],
-                        cuisine=st.session_state.generated_recipe['cuisine'],
-                        nutrition_value=st.session_state.generated_recipe['nutrition_value']
+                        ingredients=', '.join(recipe_data['all_ingredients']),
+                        recipe_generated=recipe_data['formatted_recipe'],
+                        cooking_time=recipe_data['cooking_time'],
+                        cuisine=recipe_data['cuisine'],
+                        nutrition_value=recipe_data['nutrition_value']
                     )
+
                     st.success("Recipe stored successfully!")
                     st.session_state.show_buttons = False
                 else:
@@ -406,39 +451,48 @@ def main_page():
 
             if st.button("Generate Another Recipe"):
 
+                recipe_data = st.session_state.get("generated_recipe")
+
+                if not recipe_data:
+                    st.error("No recipe to regenerate.")
+                    return
+
                 new_prompt = (
                     f"Generate a different recipe using: "
-                    f"{', '.join(st.session_state.generated_recipe['all_ingredients'])}. "
+                    f"{', '.join(recipe_data['all_ingredients'])}. "
                     f"Suitable for a {st.session_state.mode} meal. "
                     "Include title, cooking time, cuisine, nutrition, and instructions."
                 )
 
                 full_recipe = ask_gemini(new_prompt)
 
-                title, cooking_time, cuisine, nutrition_value, instructions = parse_recipe(full_recipe)
+                if not full_recipe:
+                    st.error("Recipe generation failed.")
+                    return
 
-                formatted_recipe = f"{title}\n\n{instructions}"
+                title, cooking_time, cuisine, nutrition_value, instructions = parse_recipe(full_recipe)
 
                 st.session_state.generated_recipe = {
                     'title': title,
                     'cooking_time': cooking_time,
                     'cuisine': cuisine,
                     'nutrition_value': nutrition_value,
-                    'all_ingredients': st.session_state.generated_recipe['all_ingredients'],
+                    'all_ingredients': recipe_data['all_ingredients'],
                     'instructions': instructions,
-                    'formatted_recipe': formatted_recipe
+                    'formatted_recipe': f"{title}\n\n{instructions}"
                 }
 
-                st.session_state.recipe_generated = True
-
                 display_recipe(
-                    title, cooking_time, cuisine,
+                    title,
+                    cooking_time,
+                    cuisine,
                     nutrition_value,
-                    st.session_state.generated_recipe['all_ingredients'],
+                    recipe_data['all_ingredients'],
                     instructions
                 )
 
     with tab2:
+
         st.subheader("Your Saved Recipes")
 
         user_recipes = get_user_recipes(st.session_state.username)
@@ -446,6 +500,7 @@ def main_page():
         if user_recipes:
             for recipe_generated in user_recipes:
                 recipe_title = recipe_generated.split('\n')[0]
+
                 if st.button(recipe_title):
                     st.session_state.selected_recipe = recipe_generated
 
@@ -457,12 +512,8 @@ def main_page():
 
 
 def logout():
-    st.session_state.logged_in = False
-    st.session_state.username = None
-    st.session_state.phone_no = None
-    st.session_state.email = None
-    st.session_state.profile_picture = None
-    st.experimental_set_query_params(page=None)
+    st.session_state.clear()
+    st.rerun()
 
 
 def start_page():
@@ -485,6 +536,7 @@ def start_page():
 
     if st.button("Get Started"):
         st.session_state.started = True
+        st.rerun()
 
 
 def main():
